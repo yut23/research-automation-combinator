@@ -1,5 +1,7 @@
 require "scripts.rac-util"
 
+--- @type bool Debug flag: set to true to enable debug logging
+local enable_debug_logging = false
 
 --- @type uint32 The version of the research automation combinator.
 local RAC_VERSION = 1
@@ -55,6 +57,84 @@ local OUTPUT_SIGNAL_INDEX = {
   RESEARCH_STATUS_END = 7,
   NEXT_FREE = 8,
 }
+local OUTPUT_SIGNAL_INDEX_NAMES = {
+  [OUTPUT_SIGNAL_INDEX.RESEARCH_CURRENT] = "R_CURRENT",
+  [OUTPUT_SIGNAL_INDEX.RESEARCH_PERCENT] = "R_PERCENT",
+  [OUTPUT_SIGNAL_INDEX.RESEARCH_CURRENT_VALUE] = "R_CURRENT_VALUE",
+  [OUTPUT_SIGNAL_INDEX.RESEARCH_REMAINING_VALUE] = "R_REMAINING_VALUE",
+  [OUTPUT_SIGNAL_INDEX.RESEARCH_TOTAL] = "R_TOTAL",
+  [OUTPUT_SIGNAL_INDEX.RESEARCH_STATUS_START] = "R_STATUS_START",
+  [OUTPUT_SIGNAL_INDEX.RESEARCH_STATUS_END] = "R_STATUS_END",
+  [OUTPUT_SIGNAL_INDEX.NEXT_FREE] = "NEXT_FREE",
+}
+
+
+local function _log_helper(message, info, ...)
+  game.print(string.format("[%05d DEBUG] %s(), line %d: " .. message, game.tick % 100000, info.name, info.currentline, ...))
+end
+
+--- Output a message to the game chat if `enable_debug_logging` is true.
+---
+--- Includes the the bottom 5 digits of the current tick, the calling function
+--- name, and the calling line, followed by `string.format(message, ...)`.
+---
+--- @param message string The message to print (may contain string.format specifiers)
+--- @param ... any Arguments for string.format specifiers.
+local function log_debug(message, ...)
+  if enable_debug_logging then
+    local info = debug.getinfo(2, "Snl")
+    _log_helper(message, info, ...)
+  end
+end
+
+--- @param output DeciderCombinatorOutput The output signal to format
+local function format_output(output)
+  local cleaned_output = {signal = output.signal}
+  if output.copy_count_from_input then
+    cleaned_output.copy_count_from_input = true
+    if not output.networks.red or not output.networks.green then
+      cleaned_output.networks = output.networks
+    end
+  elseif output.constant ~= 1 then
+    cleaned_output.constant = output.constant
+  end
+  cleaned_output = output
+  return serpent.line(cleaned_output)
+end
+
+--- @param outputs DeciderCombinatorOutput[] The output signals to format.
+--- @param use_newline bool Whether to separate outputs with newlines or commas.
+local function _format_outputs(outputs, use_newline)
+  local surround = #outputs > 0
+  local sep = ", "
+  local prefix = ""
+  if use_newline and #outputs > 2 then
+    surround = false
+    sep = "  \n"
+    prefix = "\n"
+  end
+  local fmt_outputs = {}
+  for _, output in ipairs(outputs) do
+    table.insert(fmt_outputs, format_output(output))
+  end
+  local ret = table.concat(fmt_outputs, sep)
+  if surround then
+    ret = "[" .. ret .. "]"
+  end
+  return prefix .. ret
+end
+
+--- Pretty-prints an array of DeciderCombinatorOutputs with `log_debug`.
+---
+--- @param message string A message to print before the array of outputs.
+--- @param outputs DeciderCombinatorOutput[] The outputs to format.
+local function log_debug_outputs(message, outputs)
+  if enable_debug_logging then
+    local info = debug.getinfo(2, "Snl")
+    _log_helper("%s (%d): %s", info, message, #outputs, _format_outputs(outputs, true))
+  end
+end
+
 
 --- @type table<string, LuaRecipePrototype[]> A table of recipes by technology name.
 local recipes_by_tech = {}
@@ -230,6 +310,22 @@ function ResearchAutomationCombinator:get_control_behavior()
     self.cb = self.entity.get_control_behavior()
   end
   return self.cb
+end
+
+function ResearchAutomationCombinator:check_next_free()
+  if false then
+    local cb = self:get_control_behavior()
+    local outputs = cb.parameters.outputs
+    local next_free = self.indexes[OUTPUT_SIGNAL_INDEX.NEXT_FREE] or 1
+    if next_free > #outputs + 1 then
+      local info = debug.traceback()
+      enable_debug_logging = true
+      log_debug("NEXT_FREE mismatch: value = %d, #outputs = %d", self.indexes[OUTPUT_SIGNAL_INDEX.NEXT_FREE], #outputs)
+      log_debug("indexes: %s", self:format_indexes())
+      log_debug_outputs("outputs", outputs)
+      assert(false)
+    end
+  end
 end
 
 --- Gets the ResearchAutomationCombinator from storage.
@@ -513,6 +609,7 @@ function ResearchAutomationCombinator:configure_from_combinator()
   end
 
   -- Clear existing outputs
+  log_debug("removing all outputs")
   for i = #parameters.outputs, 1, -1 do
     cb.remove_output(i)
   end
@@ -532,6 +629,7 @@ end
 
 --- On tick handler for the research automation combinator.  Needs to be speedy, since it is called every tick.
 function ResearchAutomationCombinator:on_tick()
+  self:check_next_free()
   -- Do a check to see if we need to reconfigure the combinator (little choice but to do this expensive check frequently,
   -- as there is no event for placing a blueprint on top of an entity).
   if (self.entity.unit_number + game.tick) % 60 == 0 then
@@ -587,6 +685,10 @@ function ResearchAutomationCombinator:on_tick()
   local cb = nil
   --- @type DeciderCombinatorParameters
   local parameters = nil
+
+  cb = cb or self:get_control_behavior()
+  local old_output_count = #cb.parameters.outputs
+  self:check_next_free()
 
   -- Process things that don't care about input signals first
   if (self.output_research_progress_percent and self.output_research_progress_percent_signal or
@@ -665,8 +767,15 @@ function ResearchAutomationCombinator:on_tick()
             self:add_output(i, output, cb)
           end
         end
+        self:check_next_free()
       end
     end
+  end
+
+  if #cb.parameters.outputs ~= old_output_count then
+    log_debug_outputs("outputs changed", cb.parameters.outputs)
+    old_output_count = #cb.parameters.outputs
+    self:check_next_free()
   end
 
   -- We have pased the enabled check, next we get a list of all relevant signals, which are only the rac signals
@@ -798,13 +907,18 @@ function ResearchAutomationCombinator:on_tick()
   cb = cb or self:get_control_behavior()
   parameters = parameters or cb.parameters
   if (#parameters.outputs == 1 and not parameters.outputs[1].signal) then
+    log_debug_outputs("clearing parameters.outputs", parameters.outputs)
+    log_debug_outputs("cb.parameters.outputs: ", cb.parameters.outputs)
+    self:check_next_free()
     parameters.outputs = {}
   end
+  self:check_next_free()
 
   -- Step through our lists in parallel.  We use a sorted iterator, because although Factorio guarantees *deterministic*
   -- ordering of keys, it does not guarantee *sorted* ordering of keys.  We make the assumption that the overhead added by
   -- sorting the output signals is less significant than what we save from having to constantly rebuild the combinator output.
   local i = self.indexes[OUTPUT_SIGNAL_INDEX.NEXT_FREE] or 1
+  self:check_next_free()
   for _, signal_type in ipairs({"fluid", "item", "recipe", "virtual"}) do
     for signal_name, qarr in sorted_iter(output_signals[signal_type] or {}) do
       for _, quality in ipairs(qualities) do
@@ -839,6 +953,7 @@ function ResearchAutomationCombinator:on_tick()
                   i = i + 1
                 elseif (current_quality < quality) then
                   -- Record should not longer exist, remove
+                  log_debug("removing output at index %d: %s", i, format_output(parameters.outputs[i]))
                   table.remove(parameters.outputs, i)
                   continue = true
                 else
@@ -847,6 +962,7 @@ function ResearchAutomationCombinator:on_tick()
                 end
               elseif (current_name < signal_name) then
                 -- Record should not longer exist, remove
+                log_debug("removing output at index %d: %s", i, format_output(parameters.outputs[i]))
                 table.remove(parameters.outputs, i)
                 continue = true
               else
@@ -865,7 +981,9 @@ function ResearchAutomationCombinator:on_tick()
                 constant = qarr[quality],
                 copy_count_from_input = false,
               }
+              log_debug("inserting output at index %d: %s", i, format_output(output))
               table.insert(parameters.outputs, i, output)
+              self:check_next_free()
               i = i + 1
             end
           end
@@ -875,17 +993,34 @@ function ResearchAutomationCombinator:on_tick()
 
     --- Remove anything that is left over for this signal type
     while (i <= #parameters.outputs and parameters.outputs[i].signal and parameters.outputs[i].signal.type == signal_type) do
+      log_debug("removing leftover signal of type '%s' at index %d: %s", signal_type, i, format_output(parameters.outputs[i]))
       table.remove(parameters.outputs, i)
     end
   end
 
   -- Remove any remaining outputs that were not part of our output_signals
   while (i <= #parameters.outputs) do
+    log_debug("removing remaining output at index %d: %s", i, format_output(parameters.outputs[i]))
     table.remove(parameters.outputs, i)
   end
 
   -- Update the cb
   cb.parameters = parameters
+
+  if #cb.parameters.outputs ~= old_output_count then
+    log_debug("outputs changed (%d): %s", #cb.parameters.outputs, format_output(cb.parameters.outputs))
+  end
+  self:check_next_free()
+end
+
+function ResearchAutomationCombinator:format_indexes()
+  local parts = {}
+  for _, i  in pairs(OUTPUT_SIGNAL_INDEX) do
+    if self.indexes[i] ~= nil then
+      table.insert(parts, string.format("%s=%d", OUTPUT_SIGNAL_INDEX_NAMES[i], self.indexes[i]))
+    end
+  end
+  return "{" .. table.concat(parts, ", ") .. "}"
 end
 
 --- Adds an output signal to the combinator and keeps the signal list up to date.
@@ -900,11 +1035,18 @@ function ResearchAutomationCombinator:add_output(name, output, cb)
 
   -- Get the next free index and add the output signal to the combinator
   local index = self.indexes[OUTPUT_SIGNAL_INDEX.NEXT_FREE] or 1
+  local desc = OUTPUT_SIGNAL_INDEX_NAMES[name] or string.format("%d", name)
+  log_debug("adding output %s at index %d: %s", desc, index, format_output(output))
+  log_debug_outputs("old outputs", cb.parameters.outputs)
   cb.add_output(output, index)
+  log_debug_outputs("new outputs", cb.parameters.outputs)
 
   -- Increment next free index and set the new index for the signal
   self.indexes[OUTPUT_SIGNAL_INDEX.NEXT_FREE] = index + 1
   self.indexes[name] = index
+
+  log_debug("new indexes: %s", self:format_indexes())
+  self:check_next_free()
 end
 
 
@@ -931,7 +1073,14 @@ function ResearchAutomationCombinator:remove_output(name, cb)
     return
   end
 
+  local desc = OUTPUT_SIGNAL_INDEX_NAMES[name]
+  if desc ~= nil then
+    desc = "=" .. desc
+  end
+  log_debug("removing output at index %d%s: %s", index, desc, format_output(cb.get_output(index)))
+  log_debug_outputs("old outputs", cb.parameters.outputs)
   cb.remove_output(index)
+  log_debug_outputs("new outputs", cb.parameters.outputs)
 
   -- Decrement the remaining indexes that were above the removed index
   for _, i  in pairs(OUTPUT_SIGNAL_INDEX) do
@@ -957,11 +1106,16 @@ function ResearchAutomationCombinator:remove_output(name, cb)
   if not self.indexes[OUTPUT_SIGNAL_INDEX.NEXT_FREE] or self.indexes[OUTPUT_SIGNAL_INDEX.NEXT_FREE] < 1 or self.indexes[OUTPUT_SIGNAL_INDEX.NEXT_FREE] > #parameters.outputs + 1 then
     self.indexes[OUTPUT_SIGNAL_INDEX.NEXT_FREE] = #parameters.outputs + 1
   end
+
+  log_debug("new indexes: %s", self:format_indexes())
+  self:check_next_free()
 end
 
 --- Removes all research status outputs from the combinator and updates indexes accordingly.
 --- @param cb LuaDeciderCombinatorControlBehavior? The control behavior of the combinator.
 function ResearchAutomationCombinator:remove_research_status_outputs(cb)
+  log_debug("initial indexes = %s", self:format_indexes())
+  self:check_next_free()
   -- If there are no research status outputs, nothing to do
   if not self.indexes[OUTPUT_SIGNAL_INDEX.RESEARCH_STATUS_START] then return end
 
@@ -987,6 +1141,9 @@ function ResearchAutomationCombinator:remove_research_status_outputs(cb)
   local count = end_idx - start + 1
 
   -- Remove the outputs in reverse order
+  if end_idx >= start then
+    log_debug("removing outputs from %d to %d", start, end_idx)
+  end
   for i = end_idx, start, -1 do
     -- Double-check the index is valid before removing
     if i <= #cb.parameters.outputs and i >= 1 then
@@ -1012,6 +1169,9 @@ function ResearchAutomationCombinator:remove_research_status_outputs(cb)
   -- Clear the research status range
   self.indexes[OUTPUT_SIGNAL_INDEX.RESEARCH_STATUS_START] = nil
   self.indexes[OUTPUT_SIGNAL_INDEX.RESEARCH_STATUS_END] = nil
+
+  log_debug("final indexes = %s", self:format_indexes())
+  self:check_next_free()
 end
 
 
@@ -1054,6 +1214,7 @@ end
 --- Handler for any change to research (finishing, cancelling, reversing).
 --- @param event? EventData.on_research_finished|EventData.on_research_reversed|EventData.on_research_cancelled
 function ResearchAutomationCombinator:on_research_change(event)
+  log_debug("entered, event=%s", serpent.line(event))
   -- Validate that our indexes are still in sync before attempting to remove outputs.
   -- This is important because on_tick() directly manipulates parameters.outputs,
   -- and this event could be triggered between on_tick() calls.
@@ -1066,6 +1227,7 @@ function ResearchAutomationCombinator:on_research_change(event)
       self:repair_indexes(cb)
     end
   end
+  self:check_next_free()
 
   -- Remove existing research status outputs
   self:remove_research_status_outputs()
@@ -1134,12 +1296,17 @@ function ResearchAutomationCombinator:on_research_change(event)
       self.indexes[OUTPUT_SIGNAL_INDEX.RESEARCH_STATUS_END] = i - 1
       self.indexes[OUTPUT_SIGNAL_INDEX.NEXT_FREE] = self.indexes[OUTPUT_SIGNAL_INDEX.RESEARCH_STATUS_END] + 1
     end
+    log_debug_outputs("final outputs", cb.parameters.outputs)
+    log_debug("final indexes = %s", self:format_indexes())
   end
+  self:check_next_free()
 end
 
 --- Handler for any change to the research queue (starting, finishing, cancelling, and moving research).
 --- @param event? EventData.on_research_finished|EventData.on_research_started|EventData.on_research_cancelled|EventData.on_research_moved
 function ResearchAutomationCombinator:on_research_queue_change(event)
+  log_debug("entered, event=%s", serpent.line(event))
+  self:check_next_free()
   local clear_research = false
   if self.output_current_research then
     local tech = game.forces.player.current_research
@@ -1199,4 +1366,6 @@ function ResearchAutomationCombinator:on_research_queue_change(event)
   if clear_research then
     self:remove_output(OUTPUT_SIGNAL_INDEX.RESEARCH_CURRENT)
   end
+  log_debug("exited")
+  self:check_next_free()
 end
