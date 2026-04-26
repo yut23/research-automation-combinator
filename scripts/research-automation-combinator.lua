@@ -71,7 +71,9 @@ local OUTPUT_SIGNAL_INDEX_NAMES = {
 
 
 local function _log_helper(message, info, ...)
-  game.print(string.format("[%05d DEBUG] %s(), line %d: " .. message, game.tick % 100000, info.name, info.currentline, ...))
+  local text = string.format("[%05d DEBUG] %s(), line %d: " .. message, game.tick % 100000, info.name, info.currentline, ...)
+  game.print(text)
+  log(text)
 end
 
 --- Output a message to the game chat if `enable_debug_logging` is true.
@@ -1009,7 +1011,7 @@ function ResearchAutomationCombinator:on_tick()
   cb.parameters = parameters
 
   if #cb.parameters.outputs ~= old_output_count then
-    log_debug("outputs changed (%d): %s", #cb.parameters.outputs, format_output(cb.parameters.outputs))
+    log_debug_outputs("outputs changed", cb.parameters.outputs)
   end
   self:check_next_free()
 end
