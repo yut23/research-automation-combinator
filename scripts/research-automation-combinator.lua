@@ -1,7 +1,8 @@
 require "scripts.rac-util"
 
 --- @type bool Debug flag: set to true to enable debug logging
-local enable_debug_logging = false
+local enable_debug_logging = true
+local enable_check_next_free = true
 
 --- @type uint32 The version of the research automation combinator.
 local RAC_VERSION = 1
@@ -313,7 +314,7 @@ function ResearchAutomationCombinator:get_control_behavior()
 end
 
 function ResearchAutomationCombinator:check_next_free()
-  if false then
+  if enable_check_next_free then
     local cb = self:get_control_behavior()
     local outputs = cb.parameters.outputs
     local next_free = self.indexes[OUTPUT_SIGNAL_INDEX.NEXT_FREE] or 1
