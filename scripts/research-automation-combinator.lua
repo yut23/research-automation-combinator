@@ -1015,6 +1015,7 @@ function ResearchAutomationCombinator:on_tick()
     log_debug("previous output count: %d", old_output_count)
     log_debug_outputs("outputs changed", cb.parameters.outputs)
   end
+  log_debug("final indexes = %s", self:format_indexes())
   self:check_next_free()
 end
 
