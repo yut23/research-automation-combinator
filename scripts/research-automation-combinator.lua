@@ -776,6 +776,7 @@ function ResearchAutomationCombinator:on_tick()
   end
 
   if #cb.parameters.outputs ~= old_output_count then
+    log_debug("previous output count: %d", old_output_count)
     log_debug_outputs("outputs changed", cb.parameters.outputs)
     old_output_count = #cb.parameters.outputs
     self:check_next_free()
@@ -1011,6 +1012,7 @@ function ResearchAutomationCombinator:on_tick()
   cb.parameters = parameters
 
   if #cb.parameters.outputs ~= old_output_count then
+    log_debug("previous output count: %d", old_output_count)
     log_debug_outputs("outputs changed", cb.parameters.outputs)
   end
   self:check_next_free()
@@ -1187,12 +1189,14 @@ function ResearchAutomationCombinator:repair_indexes(cb)
   local parameters = cb.parameters
   if not parameters or not parameters.outputs then
     -- No outputs, reset everything
+    log_debug("no outputs, reset everything")
     self.indexes = {
       [OUTPUT_SIGNAL_INDEX.NEXT_FREE] = 1,
     }
     return
   end
 
+  log_debug("repairing indexes, initial = %s", self:format_indexes())
   -- Build a new indexes table based on the actual outputs
   local actual_output_count = #parameters.outputs
 
@@ -1212,6 +1216,7 @@ function ResearchAutomationCombinator:repair_indexes(cb)
   end
 
   self.indexes[OUTPUT_SIGNAL_INDEX.NEXT_FREE] = max_index + 1
+  log_debug("repaired indexes = %s", self:format_indexes())
 end
 
 --- Handler for any change to research (finishing, cancelling, reversing).
